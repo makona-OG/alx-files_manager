@@ -1,76 +1,43 @@
-/* eslint-disable import/no-named-as-default */
-import { writeFile } from 'fs';
-import { promisify } from 'util';
-import Queue from 'bull/lib/queue';
-import imgThumbnail from 'image-thumbnail';
-import mongoDBCore from 'mongodb/lib/core';
+import Queue from 'bull';
+import imageThumb from 'image-thumbnail';
+import { ObjectId } from 'mongodb';
+import fs from 'fs';
 import dbClient from './utils/db';
-import Mailer from './utils/mailer';
 
-const writeFileAsync = promisify(writeFile);
-const fileQueue = new Queue('thumbnail generation');
-const userQueue = new Queue('email sending');
+const fileQueue = new Queue('fileQueue');
+const userQueue = new Queue('userQueue');
 
-/**
- * Generates the thumbnail of an image with a given width size.
- * @param {String} filePath The location of the original file.
- * @param {number} size The width of the thumbnail.
- * @returns {Promise<void>}
- */
-const generateThumbnail = async (filePath, size) => {
-  const buffer = await imgThumbnail(filePath, { width: size });
-  console.log(`Generating file: ${filePath}, size: ${size}`);
-  return writeFileAsync(`${filePath}_${size}`, buffer);
-};
-
-fileQueue.process(async (job, done) => {
-  const fileId = job.data.fileId || null;
-  const userId = job.data.userId || null;
-
-  if (!fileId) {
-    throw new Error('Missing fileId');
-  }
-  if (!userId) {
-    throw new Error('Missing userId');
-  }
-  console.log('Processing', job.data.name || '');
-  const file = await (await dbClient.filesCollection())
-    .findOne({
-      _id: new mongoDBCore.BSON.ObjectId(fileId),
-      userId: new mongoDBCore.BSON.ObjectId(userId),
-    });
-  if (!file) {
-    throw new Error('File not found');
-  }
-  const sizes = [500, 250, 100];
-  Promise.all(sizes.map((size) => generateThumbnail(file.localPath, size)))
-    .then(() => {
-      done();
-    });
-});
-
-userQueue.process(async (job, done) => {
-  const userId = job.data.userId || null;
-
-  if (!userId) {
-    throw new Error('Missing userId');
-  }
-  const user = await (await dbClient.usersCollection())
-    .findOne({ _id: new mongoDBCore.BSON.ObjectId(userId) });
-  if (!user) {
-    throw new Error('User not found');
-  }
-  console.log(`Welcome ${user.email}!`);
+fileQueue.process(async (job) => {
   try {
-    const mailSubject = 'Welcome to ALX-Files_Manager';
-    const mailContent = [
-      '<div>',
-      '<h3>Hello {{user.name}},</h3>',
-      '</div>',
-    ].join('');
-    Mailer.sendMail(Mailer.buildMessage(user.email, mailSubject, mailContent));
-    done();
-  } catch (err) {
-    done(err);
+    const { fileId, userId } = job.data;
+    if (!fileId) throw new Error('Missing fileId');
+    if (!userId) throw new Error('Missing userId');
+
+    const file = await dbClient.dbClient.collection('files').findOne({ _id: ObjectId(fileId), userId: ObjectId(userId) });
+    if (!file) throw new Error('File not found');
+    const path = file.localPath;
+    fs.writeFileSync(`${path}_500`, await imageThumb(path, { width: 500 }));
+
+    fs.writeFileSync(`${path}_250`, await imageThumb(path, { width: 250 }));
+
+    fs.writeFileSync(`${path}_100`, await imageThumb(path, { width: 100 }));
+  } catch (error) {
+    console.error('An error occurred:', error);
   }
 });
+
+userQueue.process(async (job) => {
+  try {
+    const { userId } = job.data;
+    if (!userId) throw new Error('Missing userId');
+    // userId already objectid
+    const user = await dbClient.dbClient.collection('users').findOne({ _id: ObjectId(userId) });
+    if (!user) throw new Error('User not found');
+
+    console.log(`Welcome ${user.email}!`);
+  } catch (error) {
+    console.error('An error occurred:', error);
+  }
+});
+
+export { fileQueue, userQueue };
